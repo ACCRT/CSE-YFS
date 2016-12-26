@@ -10,8 +10,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <list>
-
+#include <fstream>
+#include <vector>
+#include <map>
 using namespace std;
+
+map<int, string > file;
 
 yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
@@ -28,6 +32,10 @@ yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
   ec->put(1,buf);
   //	if (ec->put(1, "") != extent_protocol::OK)
   // 	  printf("error init root dir\n"); // XYB: init root dir
+  
+  ofstream ofs("LOG.txt");
+  ofs<<"";
+  ofs.close();
 }
 
 
@@ -194,7 +202,7 @@ yfs_client::setattr(inum ino, size_t size)
 
 int
 yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
-{
+{	
     int r = OK;
 
     /*
@@ -203,6 +211,7 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
      * after create file or dir, you must remember to modify the parent infomation.
      */
     lc->acquire(parent);
+	
 	bool found;
 	lookup(parent,name,found,ino_out);
 	if(found) 
@@ -221,6 +230,14 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
 	buf = buf + name_out + '\0' + filename(ino_out)+ '\0';
 	ec->put(parent,buf);
 	
+	ofstream ofs;
+	ofs.open("LOG.txt",ios::app);
+	string content;
+	content = "create "+filename(parent)+" "+name_out+" "+filename(mode)+" "+filename(ino_out)+"\n";
+	ofs<<content.size()<<" "<<content;
+	ofs.close();
+	
+	file[ino_out] = name_out;
 	lc->release(parent);
     return r;
 }
@@ -357,7 +374,16 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
      */
     lc->acquire(ino);
 	string buf;
+
+	string content;
+	content = "write "+file[ino]+" ";
+	ofstream ofs;
+	ofs.open("LOG.txt",ios::app);
+	
 	ec->get(ino,buf);
+	
+	content= content+filename(buf.size())+" "+buf+" ";
+	
 	int ori_buff_size = buf.size();
 	int i;
 	bytes_written = size;
@@ -378,6 +404,10 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
 			buf+=data[i];
 	}
 	ec->put(ino,buf);
+
+	content = content + filename(buf.size()) + " " + buf + "\n";
+	ofs<<content.size()<<" "<<content;
+	ofs.close();
 	
 	lc->release(ino);
     return r;
@@ -403,6 +433,11 @@ int yfs_client::unlink(inum parent,const char *name)
 		return r;
 	}
 	
+	string content;
+	ofstream ofs;
+	ofs.open("LOG.txt",ios::app);
+	content = "unlink "+filename(parent)+" "+name_out+" ";
+	
 	std::list<dirent> list;
 	string buf;
 	readdir(parent,list);
@@ -411,11 +446,19 @@ int yfs_client::unlink(inum parent,const char *name)
 	for(ite = list.begin(); ite!= list.end(); ite++)
 		if(ite->name != name_out)
 			buf = buf + ite->name + '\0' + filename(ite->inum) + '\0';
+		else
+		{
+			string buf2;
+			ec->get(ite->inum,buf2);
+			content = content + filename(buf2.size())+" "+ buf2 + "\n";
+			ofs<<content.size()<<" "<<content;
+			ofs.close();
+		}
 			
 	ec->put(parent,buf);
 	
 	ec->remove(ino_out);
-	
+	file[ino_out] = "ERROR";
 	lc->release(parent);
     return r;
 }
@@ -456,4 +499,301 @@ int yfs_client::readsym(inum ino, std::string &result)
     ec->get(ino, result);
     ofs << result << "\n";
     return r;
+}
+
+int current_version;
+
+int yfs_client::commit_version()
+{
+	printf("now_in_commit");
+	int version = 1;
+	string tmp;
+	ifstream ifs;
+	ifs.open("LOG.txt");
+	ofstream ofs;
+	ofs.open("LOG.txt",ios::app);
+	while(1)
+	{
+		string tmp;
+		int length;
+		ifs>>length;
+		char c;
+		ifs.get(c);
+		for(int i=0;i<length;i++)
+		{
+			ifs.get(c);
+			tmp+=c;
+		}
+		if(tmp.substr(0,tmp.size()-3) == "version")
+			version++;
+		if(ifs.eof())
+			break;
+	}
+	string content = "version "+filename(version)+"\n";
+	ofs<<content.size()<<" "<<content;
+	ifs.close();
+	ofs.close();
+	current_version = version + 1;
+	return OK;
+}
+
+int yfs_client::pre_version()
+{
+	vector<string> operation;
+	int version = current_version-1;
+	ifstream ifs;
+	ifs.open("LOG.txt");
+	ofstream ofs;
+	ofs.open("LOG.txt",ios::app);
+	ofs<<"prebegin"<<endl;
+	cout<<version<<endl;
+	
+	while(1)
+	{
+		string tmp;
+		int length;
+		ifs>>length;
+		char c;
+		ifs.get(c);
+		for(int i=0;i<length;i++)
+		{
+			ifs.get(c);
+			tmp+=c;
+		}
+		bool find_ver = 0;
+		string tmp2;
+		istringstream iss(tmp);
+		iss>>tmp2;
+		if(tmp2 == "version")
+		{
+			iss>>tmp2;
+			if(n2i(tmp2) == current_version-1)
+				find_ver = 1;
+		}
+		if(find_ver == 1)
+			break;
+	}
+	
+	while(!(ifs.eof() || ifs.fail()))
+	{
+		string tmp;
+		int length;
+		ifs>>length;
+		char c;
+		ifs.get(c);
+		for(int i=0;i<length;i++)
+		{
+			ifs.get(c);
+			tmp+=c;
+		}
+		bool find_ver = 0;
+		string tmp2;
+		istringstream iss(tmp);
+		iss>>tmp2;
+		if(tmp2 == "version")
+		{
+			iss>>tmp2;
+			if(n2i(tmp2) == current_version)
+				find_ver = 1;
+		}
+		else if(tmp2 == "prebegin")
+			while(getline(ifs,tmp) && tmp != "preend");
+		else if(tmp2 == "nextbegin")
+			while(getline(ifs,tmp) && tmp != "nextend");
+		else
+		{
+			cout<<tmp<<endl;
+			operation.push_back(tmp);
+		}
+		if(find_ver == 1)
+			break;
+	}
+	
+	cout<<"there\n";
+	
+	int i;
+	for(i=operation.size()-1;i>-1;i--)
+	{
+		istringstream iss(operation[i]);
+		string op;
+		iss>>op;
+		if(op == "create")
+		{
+			inum parent;
+			iss>>parent;
+			string name;
+			iss>>name;
+			unlink(parent,name.c_str());
+		}
+		else if(op == "unlink")
+		{
+			inum parent;
+			iss>>parent;
+			string name;
+			iss>>name;
+			mode_t mode = 33188;
+			inum ino_out;
+			create(parent,name.c_str(),mode,ino_out);
+			string content;
+			int contentsize;
+			iss>>contentsize;
+			char c;
+			iss.get(c);
+			for(int i = 0; i<contentsize; i++)
+			{
+				iss.get(c);
+				content += c;
+			}
+			ec->put(ino_out,content);
+		}
+		else if(op == "write")
+		{
+			inum ino;
+			string filename;
+			iss>>filename;
+			map<int,string>::iterator ite;
+			for(ite = file.begin();ite!=file.end();ite++)
+				if(ite->second == filename)
+				{
+					ino = ite->first;
+					break;
+				}
+			int bufsize;
+			iss>>bufsize;
+			char c;
+			iss.get(c);
+			string buf = "";
+			for(int i = 0; i<bufsize; i++)
+			{
+				iss.get(c);
+				buf += c;
+			}
+			ec->put(ino,buf);
+		}
+	}
+	
+	current_version-=1;
+	ifs.close();
+	ofs<<"preend"<<endl;
+	ofs.close();
+	return OK;
+}
+
+int yfs_client::next_version()
+{
+	int version = current_version+1;
+	ifstream ifs;
+	ofstream ofs;
+	ifs.open("LOG.txt");
+	ofs.open("LOG.txt",ios::app);
+	ofs<<"nextbegin"<<endl;
+	while(1)
+	{
+		string tmp;
+		int length;
+		ifs>>length;
+		char c;
+		ifs.get(c);
+		for(int i=0;i<length;i++)
+		{
+			ifs.get(c);
+			tmp+=c;
+		}
+		bool find_ver = 0;
+		string tmp2;
+		istringstream iss(tmp);
+		iss>>tmp2;
+		if(tmp2 == "version")
+		{
+			iss>>tmp2;
+			if(n2i(tmp2) == current_version)
+				find_ver = 1;
+		}
+		if(find_ver == 1)
+			break;
+	}
+	
+	while(1)
+	{
+		string tmp;
+		int length;
+		ifs>>length;
+		char c;
+		ifs.get(c);
+		for(int i=0;i<length;i++)
+		{
+			ifs.get(c);
+			tmp+=c;
+		}
+		bool find_ver = 0;
+		string tmp2;
+		istringstream iss(tmp);
+		iss>>tmp2;
+		if(tmp2 == "version")
+		{
+			iss>>tmp2;
+			if(n2i(tmp2) == current_version+1)
+				find_ver = 1;
+		}
+		else if(tmp2 == "prebegin")
+			while(getline(ifs,tmp) && tmp == "preend");
+		else if(tmp2 == "nextbegin")
+			while(getline(ifs,tmp) && tmp == "nextend");
+		else if(tmp2 == "create")
+		{
+			inum parent;
+			iss>>parent;
+			string name;
+			iss>>name;
+			mode_t mode;
+			iss>>mode;
+			inum ino_out;
+			create(parent,name.c_str(),mode,ino_out);
+		}
+		else if(tmp2 == "write")
+		{
+			inum ino;
+			string filename;
+			iss>>filename;
+			map<int,string>::iterator ite;
+			for(ite = file.begin();ite!=file.end();ite++)
+				if(ite->second == filename)
+					ino = ite->first;
+			int bufsize;
+			string buf;
+			iss>>bufsize;
+			char c;
+			iss.get(c);
+			for(int i=0;i<bufsize;i++)
+			{
+				iss.get(c);
+				buf += c;
+			}
+			buf = "";
+			iss>>bufsize;
+			iss.get();
+			for(int i=0;i<bufsize;i++)
+			{
+				iss.get(c);
+				buf += c;
+			}
+			ec->put(ino,buf);
+		}
+		else if(tmp2 == "unlink")
+		{
+			inum parent;
+			iss>>parent;
+			string name;
+			iss>>name;
+			unlink(parent,name.c_str());
+		}
+		if(find_ver == 1)
+			break;
+	}
+	
+	current_version+=1;
+	ifs.close();
+	ofs<<"nextend"<<endl;
+	ofs.close();
+	return OK;
 }

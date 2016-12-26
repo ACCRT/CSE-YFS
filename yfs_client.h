@@ -64,6 +64,9 @@ class yfs_client {
   int mkdir(inum , const char *, mode_t , inum &);
   int mksym(const char *, inum, const char*, inum &);
   int readsym(inum, std::string &);
+  int commit_version();
+  int pre_version();
+  int next_version();
   /** you may need to add symbolic link related methods here.*/
 };
 
