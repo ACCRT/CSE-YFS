@@ -13,12 +13,14 @@
 
 using namespace std;
 
-yfs_client::yfs_client(std::string extent_dst)
+yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
-    ec = new extent_client(extent_dst);
-    if (ec->put(1, "") != extent_protocol::OK)
-        printf("error init root dir\n"); // XYB: init root dir
+  ec = new extent_client(extent_dst);
+  lc = new lock_client(lock_dst);
+  if (ec->put(1, "") != extent_protocol::OK)
+      printf("error init root dir\n"); // XYB: init root dir
 }
+
 
 yfs_client::inum
 yfs_client::n2i(std::string n)
@@ -191,9 +193,14 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
      * note: lookup is what you need to check if file exist;
      * after create file or dir, you must remember to modify the parent infomation.
      */
+    lc->acquire(parent);
 	bool found;
 	lookup(parent,name,found,ino_out);
-	if(found) return r;
+	if(found) 
+	{
+		lc->release(parent);
+		return r;
+	}
 	
 	string name_out(name);
 	ec->create(2,ino_out);
@@ -202,6 +209,7 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
 	ec->get(parent,buf);
 	buf = buf + name_out + '\0' + filename(ino_out)+ '\0';
 	ec->put(parent,buf);
+	lc->release(parent);
     return r;
 }
 
@@ -215,9 +223,14 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
      * note: lookup is what you need to check if directory exist;
      * after create file or dir, you must remember to modify the parent infomation.
      */
+    lc->acquire(parent);
 	bool found;
 	lookup(parent,name,found,ino_out);
-	if(found) return r;
+	if(found) 
+	{
+		lc->release(parent);
+		return r;
+	}
 	
 	string name_out(name);
 	ec->create(1,ino_out);
@@ -226,6 +239,7 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
 	ec->get(parent,buf);
 	buf = buf + name_out + '\0' + filename(ino_out)+ '\0';
 	ec->put(parent,buf);
+	lc->release(parent);
     return r;
 }
 
@@ -327,6 +341,7 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
      * note: write using ec->put().
      * when off > length of original file, fill the holes with '\0'.
      */
+    lc->acquire(ino);
 	string buf;
 	ec->get(ino,buf);
 	int ori_buff_size = buf.size();
@@ -350,6 +365,7 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
 	}
 	ec->put(ino,buf);
 	
+	lc->release(ino);
     return r;
 }
 
@@ -362,11 +378,16 @@ int yfs_client::unlink(inum parent,const char *name)
      * note: you should remove the file using ec->remove,
      * and update the parent directory content.
      */
+    lc->acquire(parent);
 	bool found;
 	inum ino_out;
 	string name_out(name);
 	lookup(parent,name,found,ino_out);
-	if(!found) return r;
+	if(!found) 
+	{
+		lc->release(parent);
+		return r;
+	}
 	
 	ec->remove(ino_out);
 	
@@ -380,7 +401,7 @@ int yfs_client::unlink(inum parent,const char *name)
 			buf = buf + ite->name + '\0' + filename(ite->inum) + '\0';
 			
 	ec->put(parent,buf);
-	
+	lc->release(parent);
     return r;
 }
 
