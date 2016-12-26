@@ -1,6 +1,5 @@
-#include "inode_manager.h"  
-#include <iostream>
-using namespace std;
+#include "inode_manager.h"
+
 // disk layer -----------------------------------------
 
 disk::disk()
@@ -98,7 +97,7 @@ block_manager::free_block(uint32_t id)
   uint32_t offset = id / BIT_PER_BYTE;
   uint32_t bit_offset = id % BIT_PER_BYTE;
   
-  *(buf_bitmap+offset) = *(buf_bitmap+offset) & 0<<(BIT_PER_BYTE-1-bit_offset);
+  *(buf_bitmap+offset) = *(buf_bitmap+offset) & ~(1<<(BIT_PER_BYTE-1-bit_offset));
   
   for(i = 0; i < BITMAP_NUM; i++)
   	write_block(2+i,buf_bitmap+i*BLOCK_SIZE);
@@ -145,7 +144,6 @@ inode_manager::inode_manager()
 
 /* Create a new file.
  * Return its inum. */
-
 uint32_t using_inodes[INODE_NUM];
  
 uint32_t
@@ -161,6 +159,9 @@ inode_manager::alloc_inode(uint32_t type)
   inode_t* tmp = new inode_t;
   tmp->type = type;
   tmp->size = 0;
+  tmp->ctime = time(0);
+  tmp->atime = time(0);
+  tmp->mtime = time(0);
   
   uint32_t inum;
   for(inum = 1; inum < INODE_NUM; inum++)
@@ -205,6 +206,11 @@ inode_manager::free_inode(uint32_t inum)
   inode_t* tmp = get_inode(inum);
   tmp->type = 0;
   tmp->size = 0;
+  tmp->atime = 0;
+  tmp->ctime = 0;
+  tmp->mtime = 0;
+  
+  using_inodes[inum] = 0;
   
   char *buf_bitmap = (char*)malloc(BLOCK_SIZE*BITMAP_NUM);
   int i;
@@ -215,7 +221,7 @@ inode_manager::free_inode(uint32_t inum)
   uint32_t bit_offset = (2+BITMAP_NUM+inum-1) % 8;
   
   if(((*(buf_bitmap+offset)>>(7-bit_offset))&1) == 1)
-  	*(buf_bitmap+offset) = *(buf_bitmap+offset) & 0<<(7-bit_offset);
+  	*(buf_bitmap+offset) = *(buf_bitmap+offset) & ~(1<<(7-bit_offset));
 
   for(i = 0; i < BITMAP_NUM; i++)
   	bm->write_block(2+i,buf_bitmap+i*BLOCK_SIZE);
@@ -286,6 +292,7 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
    */
   inode_t* tmp = get_inode(inum);
   *size = tmp->size;
+  tmp->atime = time(0);
   if(*size == 0)
   	return;
   uint32_t bnum = (*size-1)/BLOCK_SIZE+1;
@@ -327,7 +334,10 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
    inode_t* tmp = get_inode(inum);
    uint32_t ori_size = tmp->size;
    tmp->size = size;
-   uint32_t bnum;
+   tmp->atime = time(0);
+   tmp->mtime = time(0);
+   tmp->ctime = time(0);
+   uint32_t bnum = 0;
    if(size != 0) bnum = (size-1)/BLOCK_SIZE+1;
    uint32_t ori_bnum = (ori_size-1)/BLOCK_SIZE+1;
    
@@ -337,21 +347,26 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
 	   {
 	   	 int i;
 		 for(i = 0; i < ori_bnum ; i++)
-		 	if(tmp->blocks[i] != 0)
-  	 			bm->free_block(tmp->blocks[i]);
+		 {
+  	 		bm->free_block(tmp->blocks[i]);
+  	 	 	tmp->blocks[i] = 0;
+  	 	 }
 	   }
 	   else
 	   {
 	   	 int i;
 	   	 for(i = 0; i < NDIRECT; i++)
-		 	if(tmp->blocks[i] != 0)
-  	 			bm->free_block(tmp->blocks[i]);
-  	 			
+	   	 {
+  	 		bm->free_block(tmp->blocks[i]);
+  	 		tmp->blocks[i] = 0;
+  	 	 }	
   	 	 char *buf_ind = (char*)malloc(BLOCK_SIZE);
   	 	 bm->read_block(tmp->blocks[NDIRECT],buf_ind);
    	 	 for(i = 0; i < ori_bnum-NDIRECT; i++)
-   	 	 	 if(*(uint32_t*)(buf_ind+sizeof(uint32_t)*i) != 0)
-   	 	 		 bm->free_block(*(uint32_t*)(buf_ind+sizeof(uint32_t)*i));
+   	 	 {
+   	 	 	bm->free_block(*(uint32_t*)(buf_ind+sizeof(uint32_t)*i));
+   	 	 	*(uint32_t*)(buf_ind+sizeof(uint32_t)*i) = 0;
+   	 	 }
    	 	 bm->free_block(tmp->blocks[NDIRECT]);
   	     free(buf_ind);
 	   }
@@ -406,7 +421,10 @@ inode_manager::getattr(uint32_t inum, extent_protocol::attr &a)
   a.atime = tmp->atime;
   a.ctime = tmp->ctime;
   a.mtime = tmp->mtime;
+  
+  free(tmp);
 }
+
 
 void
 inode_manager::remove_file(uint32_t inum)
@@ -427,20 +445,29 @@ inode_manager::remove_file(uint32_t inum)
 	   	 int i;
 		 for(i = 0; i < ori_bnum ; i++)
 		 	if(tmp->blocks[i] != 0)
+		 	{
   	 			bm->free_block(tmp->blocks[i]);
+  	 			tmp->blocks[i] = 0;
+  	 		}
 	   }
 	   else
 	   {
 	   	 int i;
 	   	 for(i = 0; i < NDIRECT; i++)
 		 	if(tmp->blocks[i] != 0)
+		 	{
   	 			bm->free_block(tmp->blocks[i]);
+  	 			tmp->blocks[i] = 0;
+  	 		}
   	 			
   	 	 char *buf_ind = (char*)malloc(BLOCK_SIZE);
   	 	 bm->read_block(tmp->blocks[NDIRECT],buf_ind);
    	 	 for(i = 0; i < ori_bnum-NDIRECT; i++)
    	 	 	 if(*(uint32_t*)(buf_ind+sizeof(uint32_t)*i) != 0)
+   	 	 	 {
    	 	 		 bm->free_block(*(uint32_t*)(buf_ind+sizeof(uint32_t)*i));
+   	 	 		 *(uint32_t*)(buf_ind+sizeof(uint32_t)*i) = 0;
+   	 	 	 }
    	 	 bm->free_block(tmp->blocks[NDIRECT]);
   	     free(buf_ind);
 	   }
