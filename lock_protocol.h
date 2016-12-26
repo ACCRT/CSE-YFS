@@ -13,7 +13,8 @@ class lock_protocol {
   enum rpc_numbers {
     acquire = 0x7001,
     release,
-    stat
+    stat,
+    client_ok
   };
 };
 

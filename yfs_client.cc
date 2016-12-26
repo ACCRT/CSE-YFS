@@ -17,8 +17,17 @@ yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
   ec = new extent_client(extent_dst);
   lc = new lock_client(lock_dst);
-  if (ec->put(1, "") != extent_protocol::OK)
-      printf("error init root dir\n"); // XYB: init root dir
+  std::list<dirent> list;
+  readdir(1, list);
+  string buf = "";
+  
+  std::list<dirent>::iterator ite;
+  for(ite = list.begin(); ite!= list.end(); ite++)
+	buf = buf + ite->name + '\0' + filename(ite->inum) + '\0';
+			
+  ec->put(1,buf);
+  //	if (ec->put(1, "") != extent_protocol::OK)
+  // 	  printf("error init root dir\n"); // XYB: init root dir
 }
 
 
@@ -203,12 +212,15 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
 	}
 	
 	string name_out(name);
+
+
 	ec->create(2,ino_out);
 	
 	string buf;
 	ec->get(parent,buf);
 	buf = buf + name_out + '\0' + filename(ino_out)+ '\0';
 	ec->put(parent,buf);
+	
 	lc->release(parent);
     return r;
 }
@@ -233,12 +245,14 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
 	}
 	
 	string name_out(name);
+	
 	ec->create(1,ino_out);
 	
 	string buf;
 	ec->get(parent,buf);
 	buf = buf + name_out + '\0' + filename(ino_out)+ '\0';
 	ec->put(parent,buf);
+	
 	lc->release(parent);
     return r;
 }
@@ -389,8 +403,6 @@ int yfs_client::unlink(inum parent,const char *name)
 		return r;
 	}
 	
-	ec->remove(ino_out);
-	
 	std::list<dirent> list;
 	string buf;
 	readdir(parent,list);
@@ -401,6 +413,9 @@ int yfs_client::unlink(inum parent,const char *name)
 			buf = buf + ite->name + '\0' + filename(ite->inum) + '\0';
 			
 	ec->put(parent,buf);
+	
+	ec->remove(ino_out);
+	
 	lc->release(parent);
     return r;
 }

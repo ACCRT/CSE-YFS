@@ -36,6 +36,7 @@ main(int argc, char *argv[])
   server.reg(lock_protocol::stat, &ls, &lock_server::stat);
   server.reg(lock_protocol::acquire, &ls, &lock_server::acquire);
   server.reg(lock_protocol::release, &ls, &lock_server::release);
+  server.reg(lock_protocol::client_ok, &ls, &lock_server::client_ok);
 #endif
 
 
